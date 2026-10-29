@@ -1,0 +1,14 @@
+# test / coverage output
+*.test
+*.out
+coverage.*
+
+# local workspace
+go.work
+go.work.sum
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
