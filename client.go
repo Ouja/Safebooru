@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
 const (
 	DefaultBaseURL   = "https://safebooru.org"
-	DefaultUserAgent = "safebooru-go/0.1 (+https://github.com/Ouja/safebooru)"
+	DefaultUserAgent = "safebooru-go/0.2 (+https://github.com/Ouja/safebooru)"
 
 	// MaxPostLimit is the API's hard limit of posts per request.
 	MaxPostLimit = 1000
@@ -37,8 +39,9 @@ type Client struct {
 type Option func(*Client)
 
 // WithBaseURL points the client at another Gelbooru-style (dapi) site.
+// A trailing slash is ignored.
 func WithBaseURL(baseURL string) Option {
-	return func(c *Client) { c.baseURL = baseURL }
+	return func(c *Client) { c.baseURL = strings.TrimRight(baseURL, "/") }
 }
 
 // WithUserAgent sets the User-Agent header. Please identify your app.
@@ -47,8 +50,13 @@ func WithUserAgent(userAgent string) Option {
 }
 
 // WithHTTPClient replaces the default *http.Client (10s timeout).
+// A nil client is ignored.
 func WithHTTPClient(httpClient *http.Client) Option {
-	return func(c *Client) { c.httpClient = httpClient }
+	return func(c *Client) {
+		if httpClient != nil {
+			c.httpClient = httpClient
+		}
+	}
 }
 
 // NewClient returns a Client with sensible defaults, changed by opts.
@@ -87,9 +95,14 @@ func (c *Client) get(ctx context.Context, params url.Values) ([]byte, error) {
 		return nil, &StatusError{StatusCode: resp.StatusCode}
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
+	// Read one byte past the limit so a too-big body is an explicit error
+	// instead of silently truncated JSON.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 	if err != nil {
 		return nil, fmt.Errorf("safebooru: read body: %w", err)
+	}
+	if len(body) > maxBodySize {
+		return nil, ErrResponseTooLarge
 	}
 
 	body = bytes.TrimSpace(body)
@@ -100,7 +113,8 @@ func (c *Client) get(ctx context.Context, params url.Values) ([]byte, error) {
 }
 
 // checkSuccess detects the API's "soft" errors: HTTP 200 with
-// {"success": false, "message": "search down"} (or the XML equivalent).
+// {"success": false, "message": "search down"} or the XML
+// <?xml ...?><response success="false" reason="..."/>.
 func checkSuccess(body []byte) error {
 	switch {
 	case len(body) == 0:
@@ -111,10 +125,60 @@ func checkSuccess(body []byte) error {
 			Message string `json:"message"`
 		}
 		if json.Unmarshal(body, &res) == nil && res.Success != nil && !*res.Success {
-			return fmt.Errorf("%w: %s", ErrSearchDown, res.Message)
+			return &APIError{Message: res.Message}
 		}
-	case bytes.HasPrefix(body, []byte("<response")) && bytes.Contains(body, []byte(`success="false"`)):
-		return ErrSearchDown
+	case body[0] == '<':
+		dec := xml.NewDecoder(bytes.NewReader(body))
+		root, err := firstElement(dec)
+		if err != nil || root.Name.Local != "response" {
+			return nil // not an error envelope; the caller decodes it
+		}
+		var success, msg string
+		for _, attr := range root.Attr {
+			switch attr.Name.Local {
+			case "success":
+				success = attr.Value
+			case "reason", "message":
+				msg = attr.Value
+			}
+		}
+		if success != "false" {
+			return nil
+		}
+		if msg == "" { // <response success="false">message</response>
+			if text, ok := nextText(dec); ok {
+				msg = text
+			}
+		}
+		return &APIError{Message: msg}
 	}
 	return nil
+}
+
+// firstElement returns the root element, skipping the <?xml ...?> header,
+// whitespace and comments.
+func firstElement(dec *xml.Decoder) (xml.StartElement, error) {
+	for {
+		token, err := dec.Token()
+		if err != nil {
+			return xml.StartElement{}, err
+		}
+		if el, ok := token.(xml.StartElement); ok {
+			return el, nil
+		}
+	}
+}
+
+// nextText returns the trimmed character data right after the current element.
+func nextText(dec *xml.Decoder) (string, bool) {
+	token, err := dec.Token()
+	if err != nil {
+		return "", false
+	}
+	text, ok := token.(xml.CharData)
+	if !ok {
+		return "", false
+	}
+	s := strings.TrimSpace(string(text))
+	return s, s != ""
 }

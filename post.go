@@ -104,28 +104,21 @@ func (c *Client) PostCount(ctx context.Context, tags []string) (int, error) {
 		return 0, nil
 	}
 
-	dec := xml.NewDecoder(bytes.NewReader(body))
-	for {
-		token, err := dec.Token()
-		if err != nil {
-			return 0, fmt.Errorf("safebooru: decode post count: %w", err)
-		}
-		root, ok := token.(xml.StartElement)
-		if !ok {
-			continue // skip the <?xml ...?> header, whitespace, comments
-		}
-		if root.Name.Local != "posts" {
-			return 0, fmt.Errorf("safebooru: decode post count: unexpected root <%s>", root.Name.Local)
-		}
-		for _, attr := range root.Attr {
-			if attr.Name.Local == "count" {
-				count, err := strconv.Atoi(attr.Value)
-				if err != nil {
-					return 0, fmt.Errorf("safebooru: decode post count: %w", err)
-				}
-				return count, nil
-			}
-		}
-		return 0, errors.New("safebooru: decode post count: no count attribute")
+	root, err := firstElement(xml.NewDecoder(bytes.NewReader(body)))
+	if err != nil {
+		return 0, fmt.Errorf("safebooru: decode post count: %w", err)
 	}
+	if root.Name.Local != "posts" {
+		return 0, fmt.Errorf("safebooru: decode post count: unexpected root <%s>", root.Name.Local)
+	}
+	for _, attr := range root.Attr {
+		if attr.Name.Local == "count" {
+			count, err := strconv.Atoi(attr.Value)
+			if err != nil {
+				return 0, fmt.Errorf("safebooru: decode post count: %w", err)
+			}
+			return count, nil
+		}
+	}
+	return 0, errors.New("safebooru: decode post count: no count attribute")
 }

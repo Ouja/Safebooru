@@ -93,11 +93,14 @@ shows one way to do it with a shared rate limit and retries. **Please keep it ge
 posts, err := client.Posts(ctx, query)
 
 var statusErr *safebooru.StatusError
+var apiErr *safebooru.APIError
 switch {
 case errors.As(err, &statusErr) && statusErr.StatusCode == 429:
 	// rate limited: slow down
 case errors.Is(err, safebooru.ErrSearchDown):
-	// the API answered {"success": false}: its search is down, try later
+	// the API says its search is down: try later
+case errors.As(err, &apiErr):
+	// HTTP 200 but {"success": false}; apiErr.Message says why
 case err != nil:
 	// network error, timeout, cancelled context, unexpected response...
 }

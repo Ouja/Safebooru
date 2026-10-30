@@ -22,5 +22,6 @@
 // many pages in parallel; please keep the request rate polite.
 //
 // Errors: a non-200 response is a *StatusError, and a "soft" failure
-// (HTTP 200 with {"success": false}) is ErrSearchDown.
+// (HTTP 200 with {"success": false}) is an *APIError. When the API says its
+// search is down, errors.Is(err, ErrSearchDown) is true.
 package safebooru
